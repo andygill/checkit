@@ -89,9 +89,20 @@ getCPUTimeSec = do
 
 ------------------------------------------------------------------------------
 
+-- TODO: generalize
 instance Product (AuditEvent ApplyMsg) env => Auditor ApplyMsg (TestM env s exc) where
   report msg = TestM $ \ env st -> do { unAuditEvent (proj env) msg ; return (Right (),st) }
 
 instance Product (AuditEvent LabelMsg) env => Auditor LabelMsg (TestM env s exc) where
   report msg = TestM $ \ env st -> do { unAuditEvent (proj env) msg ; return (Right (),st) }
+
+------------------------------------------------------------------------------
+
+class SplitState s where
+   splitState :: s -> (s,s)
+
+instance (SplitState s) => MonadFork (TestM e s x) where
+  forkM m = TestM $ \ env st -> do let (st1,st2) = splitState st
+  	    	      	     	   pid <- forkIO (unTestM m env st1 >> return ())	-- throws away any exceptions??
+				   return (Right $ liftIO $ killThread pid ,st2)
 

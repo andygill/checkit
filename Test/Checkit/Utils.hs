@@ -15,20 +15,35 @@ import Test.Checkit.Serial
 import Test.Checkit.ValueKey
 
 import Test.Checkit.Interfaces as I
-
+import GHC.Conc
 ------------------------------------------------------------------------------
 
-------------------------------------------------------------------------------
 
-doWhile :: (Monad m) => t1 -> m t -> (t -> t1 -> m (Either r t1)) -> m r
-doWhile s m cont = do
-	r <- m
-        go <- cont r s
-	case go of
-	  Left r -> return r
-	  Right s' -> doWhile s' m cont
+doWhile :: MonadFork m 
+	     => Int			-- number of concurrent bodies
+             -> s
+	     -> m t			-- this can actually be run concurrently
+	     -> (t -> s -> Either r s)	-- the conditional
+	     -> m (s,r)			-- any threads created are destroyed
+doWhile cap s m cont = do
+        var <- liftIO $ newEmptyMVar
+        let loop m = m >> loop m
+        pids <- sequence [ forkM $ loop $
+                           do v <- m 
+                              liftIO $ putMVar var v
+                         | _ <- [1..cap]
+                         ]
+        let checks s = do
+               r <- liftIO $ takeMVar var
+               case cont r s of
+                 Left r -> do sequence pids
+                              return (s,r)
+                 Right s' -> checks s'
+        checks s
 
 	
+
+
 	
 ------------------------------------------------------------------------------
 

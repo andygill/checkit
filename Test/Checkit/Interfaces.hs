@@ -69,3 +69,11 @@ data LabelMsg = Label String			-- remember a label
 --label :: (Sum Label chan,Auditor chan m) => String -> m ()
 --label :: (Sum Label all, Auditor all m) => String -> m ()
 --label lab = report (inj (Label lab))
+
+
+------------------------------------------------------------------------------
+
+class (MonadIO m) => MonadFork m where
+      forkM :: m () -> m (m ())	-- return a way to kill the child
+
+------------------------------------------------------------------------------

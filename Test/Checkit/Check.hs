@@ -24,8 +24,11 @@ import Test.Checkit.Serial
 import Test.Checkit.Interfaces
 import Test.Checkit.TestMonad
 import Control.Concurrent.MVar
+import Control.Concurrent.Chan
 import Control.Concurrent
 import System.IO
+
+import GHC.Conc
 
 import Prelude hiding (abs)
 
@@ -38,6 +41,11 @@ newtype PMState = PMState { rnd :: R.StdGen }
 instance Product R.StdGen PMState where
   proj (PMState v) = v
   upd v (PMState _) = PMState v
+
+instance SplitState PMState where
+   splitState (PMState r) = (PMState r1,PMState r2)
+     where (r1,r2) = R.split r
+
 
 data    PMEnv   = PMEnv { applyMsg :: AuditEvent ApplyMsg
                         , labelMsg :: AuditEvent LabelMsg
@@ -82,23 +90,73 @@ instance Product R.StdGen state => RandomMonad (TestM env state exc) where
 
 newtype P a = P { unP :: PM Bool }
 
-runtest :: (Testable t) => t -> IO ()
-runtest the_test =
+data Message = TestNo Int 
+             | TestDone Int Int (Maybe RejectMsg)
+             | TestProgress
+
+data RejectMsg = RejectMsg
+
+mkPutMsg = do 
+     chan <- newChan    -- printing channel
+
+     let printer old c = do
+             (v,msg) <- readChan chan
+             let next txt  = do { putMVar v (); printer txt 0 }
+             let next' txt = do { putMVar v (); printer txt (succ c) }
+
+
+             case msg of
+               TestProgress -> do
+                              let msg = take 10
+                                        (take ((c `div` 4) `mod` 10) (cycle ".") 
+                                          ++ (["|","/","-","\\"] !! (c `mod` 4))
+                                          ++ cycle ".")
+                              putStr old 
+                              putStr msg
+                              hFlush stdout
+                              next' ([ '\b' | _ <-  msg ] ++
+                                     [ ' ' | _ <-  msg ] ++
+                                     [ '\b' | _ <-  msg ])
+{-
+               TestNo n -> do let msg = show n ++ "."
+                              putStr old 
+                              putStr msg
+                              hFlush stdout
+                              next [ '\b' | _ <-  msg ] 0
+-}
+               TestDone g b Nothing -> do 
+                              putStr old
+                              putStr ("PASSED, " ++ show g ++ " test(s), " ++ show b ++ " trivial(s)")
+                              hFlush stdout
+                              next []
+               TestDone g b (Just msg) -> do 
+                              putStr old
+                              putStr ("FAILED, " ++ show g ++ " test(s), " ++ show b ++ " trivial(s)")
+                              hFlush stdout
+                              next []
+     forkIO $ printer ""                               0
+     return $ \ msg -> do v <- newEmptyMVar 
+                          writeChan chan (v,msg)
+                          takeMVar v
+
+runtest :: (Message -> IO ()) -> (Testable t) => t -> IO ()
+runtest putMsg the_test =
   do let p@(P m) = property the_test
      stdGen <- R.getStdGen
-     print stdGen
-
+--     print stdGen
 
      let test = timingM
 	     (
 	       (do stdGen <- getStdGen
-                   r <- timeoutM 1 (applySeriesArgs stdGen p args)
+                   r <- timeoutM 10 (applySeriesArgs stdGen p args)
+                   liftIO $ putMsg (TestProgress)
 		   return (Right r)) `catchError` (\ e -> return (Left e)))
 
      let three xs = init xs ++ ["." ++ last xs]
             where txt = xs ++ xs ++ xs
      let spin = three ["|","/","-","\\"] ++ spin
      spins <- newMVar spin
+
      
      let doPrint = do (c:cs) <- takeMVar spins
                       putMVar spins cs
@@ -106,43 +164,68 @@ runtest the_test =
                       putStr "\b"
                       hFlush stdout
 
-     let print' (TestArgs s vks) = doPrint -- print (showArgValues s vks) -- doPrint
+--     let print' (TestArgs s vks) = print (showArgValues s vks)
+     let print' (TestArgs s vks) = return ()
+-- doPrint
+--return () 
+-- doPrint -- 
 
      labProc <- processLabels $ (putStrLn . percentages)
 
-     let runTrans :: R.StdGen -> PM a -> IO ()
+     let runTrans :: R.StdGen -> PM ((Int,Int),Maybe RejectMsg) -> IO ()
          runTrans stdGen (TestM m) = do
 	  (r,_) <- m (PMEnv (AuditEvent print') (AuditEvent labProc) (ValueKeys [])) (PMState stdGen)
 --          labProc ShowLabels
 	  case r of
 	    Left e -> do fail $ show e
-            Right v -> return ()
+            Right ((g,b),v) -> do putMsg (TestDone g b v)
+                                  return ()
 
-     let loop n = doWhile (0,0) test $ \ (a,tm) (good,triv) -> do
+     let loop n = doWhile (numCapabilities) (0,0) test 
+                $ \ (a,tm) (good,triv) -> do
              case a of 
 		Right True -> let good' = succ good in
-		      	      if good' >= n 
-			      	 then return (Left ())
-			      	 else return (Right (good',triv))
-		Right False -> return (Left ())
+		      	      if good' > n 
+			      	 then (Left (Nothing))
+			      	 else (Right (good',triv))
+		Right False -> (Left (Just RejectMsg))
 		Left (TrivE {})
 		         -> do 
 			       let triv' = succ triv 
 		      	       if triv' >= n * 10
-			      	 then return (Left ())
-			      	 else return (Right (good,triv'))
+			      	 then (Left (Just RejectMsg))
+			      	 else (Right (good,triv'))
 		Left (TimeoutE {})
 		         -> do let triv' = succ triv 
 		      	       if triv' >= n * 10
-			      	 then return (Left ())
-			      	 else return (Right (good,triv'))
+			      	 then (Left (Just RejectMsg))
+			      	 else (Right (good,triv'))
      v1 <- newEmptyMVar
      v2 <- newEmptyMVar
+     let cores = numCapabilities * 8	-- the idea is large jobs keep going when other jobs are done
+
+     let counter = 500
+     let counters0 = [ counter `div` cores | n <- [2..cores]]
+
+     let counters1 = counter - sum counters0 : counters0
+
+     -- perhaps should just fork each test? 100 threads is easy for GHC.
+
+--     print counters0
+--     print counters1
+
      let (r1,r2) = R.split stdGen
-     p1 <- forkIO $ runTrans r1 (loop 50) >> putMVar v1 ()
-     p2 <- forkIO $ runTrans r2 (loop 50) >> putMVar v2 ()
+     forkIO $ do { runTrans r2 (loop 500) ; putMVar v1 () }
+{-
+     ps <- sequence [ do v1 <-newEmptyMVar
+                         forkIO $ do { runTrans r2 (loop 100) ; putMVar v1 () }
+                         return $ v1
+                    ]
+-}
+--     p1 <- 
+--     p2 <- forkIO $ runTrans r2 (loop 50) >> putMVar v2 ()
      takeMVar v1
-     takeMVar v2
+--     takeMVar v2
 
 --print' :: ApplyMsg -> IO ()
 --print' (TestArgs s vks) = print (showArgValues s vks)
@@ -176,10 +259,11 @@ label  msg t = P $ do report (Label msg)
 data CheckitTest = forall t . (Testable t) => String :~> t 
 
 checkit :: [CheckitTest] -> IO ()
-checkit tests = 
-        sequence_ [ do print name
-                       runtest the_test
-                       print "[DONE]" 
+checkit tests = do
+        putMsg <- mkPutMsg 
+        sequence_ [ do putStr (name ++ " : ")
+                       runtest putMsg the_test
+                       putStr "\n"
                   | name :~> the_test <- tests
                   ]
         

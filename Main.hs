@@ -34,7 +34,7 @@ prop_fib xs = not (null xs) ==> (fib n == length (fibL xs3))
 	n     = length xs3
 	xs1   = xs ++ xs
 	xs2   = xs1 ++ xs1
-	xs3 = take 27 (cycle xs2)
+	xs3   = take 25 (cycle xs2)
 
 fibL      :: [()] -> [()]
 fibL []   = [()]
