@@ -62,13 +62,23 @@ prop_sort xs = length xs >=> sort xs
 
 -}
 
+prop_io x = (return () :: IO ())
+     where
+        types = (x :: Bool)
+
+prop_io2 x = (return True :: IO Bool)
+     where
+        types = (x :: Bool)
+
 main = do
      print numCapabilities
      tm1 <-  getCPUTimeSec 
      checkit
      	     [ "prop_map_id" :~> prop_map_id
 	     , "prop_hack"   :~> prop_hack
-	     , "prop_fib"   :~> prop_fib
+--           , "prop_fib"   :~> prop_fib
+             , "prop_io"    :~> prop_io
+             , "prop_io2"    :~> prop_io2
              ]
      tm2 <- getCPUTimeSec
      print (tm2 - tm1)

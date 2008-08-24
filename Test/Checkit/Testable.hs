@@ -42,6 +42,13 @@ instance (Serial a,SerialArgs b) => SerialArgs (a -> b) where
 instance SerialArgs Bool where
   args = Nil
 
+
+instance SerialArgs (IO ()) where
+  args = Nil
+
+instance SerialArgs (IO Bool) where
+  args = Nil
+
 -------------------------------------------------------------------------------
 
 

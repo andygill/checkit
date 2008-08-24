@@ -243,6 +243,19 @@ instance SerialArgs a => TestableWith PM P (P a) where -- also generic???
 instance SerialArgs t => SerialArgs (P t) where	-- perhaps could make this generic
   args = Prop args 
 
+instance TestableWith (TestM PMEnv PMState PMExc) P (IO ()) where
+   property ioAction = abs (do { liftIO ioAction; return True })
+
+instance TestableWith (TestM PMEnv PMState PMExc) P (IO Bool) where
+   property ioAction = abs (do { liftIO ioAction })
+
+--instance SerialArgs (IO ()) where	-- perhaps could make this generic
+--  args = undefined
+
+
+   
+
+
 class (TestableWith PM P t) => Testable t 
 instance (TestableWith PM P t) => Testable t
 
