@@ -24,8 +24,9 @@ doWhile :: MonadFork m
              -> s
 	     -> m t			-- this can actually be run concurrently
 	     -> (t -> s -> Either r s)	-- the conditional
+             -> (s -> m ())    		-- the message based on the new result (interim result)
 	     -> m (s,r)			-- any threads created are destroyed
-doWhile cap s m cont = do
+doWhile cap s m cond msgr = do
         var <- liftIO $ newEmptyMVar
         let loop m = m >> loop m
         pids <- sequence [ forkM $ loop $
@@ -35,10 +36,11 @@ doWhile cap s m cont = do
                          ]
         let checks s = do
                r <- liftIO $ takeMVar var
-               case cont r s of
+               case cond r s of
                  Left r -> do sequence pids
                               return (s,r)
-                 Right s' -> checks s'
+                 Right s' -> do msgr s'
+                                checks s'
         checks s
 
 	

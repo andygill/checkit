@@ -44,10 +44,10 @@ instance SerialArgs Bool where
 
 
 instance SerialArgs (IO ()) where
-  args = Nil
+  args = Nil_IO
 
 instance SerialArgs (IO Bool) where
-  args = Nil
+  args = Nil_IO
 
 -------------------------------------------------------------------------------
 

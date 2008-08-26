@@ -70,15 +70,29 @@ prop_io2 x = (return True :: IO Bool)
      where
         types = (x :: Bool)
 
+prop_write_read_IO str = do pid <- myThreadId
+                            let file = "/tmp/foo" ++ show pid
+                            writeFile file msg
+                            threadDelay 1000
+                            msg2 <- readFile file
+                            return $ msg == msg2
+  where
+        types = (str :: [Int])
+        msg  = show types
+
+
 main = do
      print numCapabilities
      tm1 <-  getCPUTimeSec 
      checkit
      	     [ "prop_map_id" :~> prop_map_id
 	     , "prop_hack"   :~> prop_hack
---           , "prop_fib"   :~> prop_fib
-             , "prop_io"    :~> prop_io
+	     , "prop_rev"    :~> prop_rev
+             , "prop_fib"  :~> prop_fib
+             , "prop_io"     :~> prop_io
              , "prop_io2"    :~> prop_io2
+--             , "prop_write_read_IO" 
+--                             :~> prop_write_read_IO
              ]
      tm2 <- getCPUTimeSec
      print (tm2 - tm1)

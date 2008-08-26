@@ -23,6 +23,7 @@ import Test.Checkit.ValueKey
 import Test.Checkit.Serial
 import Test.Checkit.Interfaces
 import Test.Checkit.TestMonad
+import Test.Checkit.Text
 import Control.Concurrent.MVar
 import Control.Concurrent.Chan
 import Control.Concurrent
@@ -90,87 +91,31 @@ instance Product R.StdGen state => RandomMonad (TestM env state exc) where
 
 newtype P a = P { unP :: PM Bool }
 
-data Message = TestNo Int 
-             | TestDone Int Int (Maybe RejectMsg)
-             | TestProgress
+data RejectMsg = RejectMsg deriving Show
 
-data RejectMsg = RejectMsg
-
-mkPutMsg = do 
-     chan <- newChan    -- printing channel
-
-     let printer old c = do
-             (v,msg) <- readChan chan
-             let next txt  = do { putMVar v (); printer txt 0 }
-             let next' txt = do { putMVar v (); printer txt (succ c) }
-
-
-             case msg of
-               TestProgress -> do
-                              let msg = take 10
-                                        (take ((c `div` 4) `mod` 10) (cycle ".") 
-                                          ++ (["|","/","-","\\"] !! (c `mod` 4))
-                                          ++ cycle ".")
-                              putStr old 
-                              putStr msg
-                              hFlush stdout
-                              next' ([ '\b' | _ <-  msg ] ++
-                                     [ ' ' | _ <-  msg ] ++
-                                     [ '\b' | _ <-  msg ])
-{-
-               TestNo n -> do let msg = show n ++ "."
-                              putStr old 
-                              putStr msg
-                              hFlush stdout
-                              next [ '\b' | _ <-  msg ] 0
--}
-               TestDone g b Nothing -> do 
-                              putStr old
-                              putStr ("PASSED, " ++ show g ++ " test(s), " ++ show b ++ " trivial(s)")
-                              hFlush stdout
-                              next []
-               TestDone g b (Just msg) -> do 
-                              putStr old
-                              putStr ("FAILED, " ++ show g ++ " test(s), " ++ show b ++ " trivial(s)")
-                              hFlush stdout
-                              next []
-     forkIO $ printer ""                               0
-     return $ \ msg -> do v <- newEmptyMVar 
-                          writeChan chan (v,msg)
-                          takeMVar v
-
-runtest :: (Message -> IO ()) -> (Testable t) => t -> IO ()
-runtest putMsg the_test =
+runtest :: Output -> (Testable t) => t -> IO ()
+runtest out the_test =
   do let p@(P m) = property the_test
      stdGen <- R.getStdGen
---     print stdGen
+
+     args' <- return $ args	-- forcing monomorphic
+     
+     -- Only the non-IO can be run in parallel
+     let par_count = if isIO args' then 1 else numCapabilities
+--     when (isIO args') $ 
+--          writeOutput out "[IO] "
 
      let test = timingM
-	     (
-	       (do stdGen <- getStdGen
-                   r <- timeoutM 10 (applySeriesArgs stdGen p args)
-                   liftIO $ putMsg (TestProgress)
+	      ((do stdGen <- getStdGen
+                   r <- timeoutM 1 (applySeriesArgs stdGen p args')
 		   return (Right r)) `catchError` (\ e -> return (Left e)))
 
-     let three xs = init xs ++ ["." ++ last xs]
-            where txt = xs ++ xs ++ xs
-     let spin = three ["|","/","-","\\"] ++ spin
-     spins <- newMVar spin
-
-     
-     let doPrint = do (c:cs) <- takeMVar spins
-                      putMVar spins cs
-                      putStr c
-                      putStr "\b"
-                      hFlush stdout
-
---     let print' (TestArgs s vks) = print (showArgValues s vks)
-     let print' (TestArgs s vks) = return ()
--- doPrint
---return () 
--- doPrint -- 
-
      labProc <- processLabels $ (putStrLn . percentages)
+
+     let print' (TestArgs s vks) = return ()
+
+     let bad 0 = ""
+         bad n = ", (" ++ show n ++ " test(s) trivial)"
 
      let runTrans :: R.StdGen -> PM ((Int,Int),Maybe RejectMsg) -> IO ()
          runTrans stdGen (TestM m) = do
@@ -178,11 +123,10 @@ runtest putMsg the_test =
 --          labProc ShowLabels
 	  case r of
 	    Left e -> do fail $ show e
-            Right ((g,b),v) -> do putMsg (TestDone g b v)
-                                  return ()
+            Right ((g,b),Nothing) -> writeOutput out $ "PASS" ++ bad b
+            Right ((g,b),Just v)  -> writeOutput out $ "FAIL, " ++ show v
 
-     let loop n = doWhile (numCapabilities) (0,0) test 
-                $ \ (a,tm) (good,triv) -> do
+     let testCond n (a,tm) (good,triv) =
              case a of 
 		Right True -> let good' = succ good in
 		      	      if good' > n 
@@ -200,6 +144,9 @@ runtest putMsg the_test =
 		      	       if triv' >= n * 10
 			      	 then (Left (Just RejectMsg))
 			      	 else (Right (good,triv'))
+
+     let loop n = doWhile par_count (0,0) test (testCond n) (\ (g,b) -> liftIO $ writeTempOutput out (show (g `div` 5) ++ "%"))
+
      v1 <- newEmptyMVar
      v2 <- newEmptyMVar
      let cores = numCapabilities * 8	-- the idea is large jobs keep going when other jobs are done
@@ -244,17 +191,13 @@ instance SerialArgs t => SerialArgs (P t) where	-- perhaps could make this gener
   args = Prop args 
 
 instance TestableWith (TestM PMEnv PMState PMExc) P (IO ()) where
-   property ioAction = abs (do { liftIO ioAction; return True })
+   property ioAction = abs (do { () <- liftIO ioAction; return $! True })
 
 instance TestableWith (TestM PMEnv PMState PMExc) P (IO Bool) where
-   property ioAction = abs (do { liftIO ioAction })
+   property ioAction = abs (do { r <- liftIO ioAction ; return $! r })
 
 --instance SerialArgs (IO ()) where	-- perhaps could make this generic
 --  args = undefined
-
-
-   
-
 
 class (TestableWith PM P t) => Testable t 
 instance (TestableWith PM P t) => Testable t
@@ -273,14 +216,19 @@ data CheckitTest = forall t . (Testable t) => String :~> t
 
 checkit :: [CheckitTest] -> IO ()
 checkit tests = do
-        putMsg <- mkPutMsg 
-        sequence_ [ do putStr (name ++ " : ")
-                       runtest putMsg the_test
-                       putStr "\n"
-                  | name :~> the_test <- tests
+        out <- mkOutput stdout
+        let max = maximum [ length name | name :~> the_test <- tests ]
+        let tests2 = [ take max (name ++ cycle " ") :~> the_test 
+                     | name :~> the_test <- tests 
+                     ]
+        sequence_ [ do writeOutput out (name ++ " : ")
+                       runtest out the_test
+                       writeOutput out "\n"
+                  | name :~> the_test <- tests2
                   ]
+        flushOutput out
         
 check :: (Testable t) => t -> IO ()
-check t = checkit ["(prop_...)" :~> t]
+check t = checkit ["checking..." :~> t]
 
 

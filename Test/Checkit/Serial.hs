@@ -26,11 +26,24 @@ data SeriesArgs a where
   Prop :: (a ~ p b)      => SeriesArgs b -> SeriesArgs (p b)
   PAP  ::                   SeriesArgs a -> SeriesArgs a -- indicating that there is special significance to previous application
   Nil  :: 		    SeriesArgs a
+  Nil_IO ::		    SeriesArgs (IO a)
 
 showSeriesArgs :: SeriesArgs a -> String
 showSeriesArgs (Bind _ c) = "* -> " ++ showSeriesArgs c
 showSeriesArgs (Prop c)   = "P (" ++ showSeriesArgs c ++ ")"
 showSeriesArgs (Nil)      = "@"
+showSeriesArgs (Nil_IO) = "IO"
+
+isIO :: SeriesArgs a -> Bool
+isIO (Bind _ c)  = isIO c
+isIO (Prop c)    = isIO c
+isIO Nil           = False
+isIO Nil_IO      = True
+
+
+
+
+
 
 ------------------------------------------------------------------------------
 
